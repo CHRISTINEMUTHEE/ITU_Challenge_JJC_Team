@@ -1,0 +1,76 @@
+[project]
+name = "embeddings"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "eotdl>=2026.3.26",
+    "lightning>=2.6.1",
+    "matplotlib>=3.10.9",
+    "rasterio>=1.5.0",
+    "tifffile>=2026.5.2",
+    "torch>=2.12.0",
+    "torchvision>=0.26.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.5.7",
+]
+
+
+[tool.ruff]
+line-length = 88
+exclude = [
+    "venv",
+    "env",
+    "__pycache__",
+    "build",
+    "dist",
+    "__init__.py",
+    "tests/"
+] 
+
+[tool.ruff.lint]
+select = [
+    "ALL",
+]
+ignore = [
+    "ANN002",   # Missing return type for args
+    "ANN003",   # Missing type for kwargs
+    "ANN204",   # Missing return type for __init__ and __main__
+    "B006",     # Mutable default argument
+    "D100",     # Missing docstring in public module
+    "D101",     # Missing docstrings
+    "D102",     # Missing docstring in public method
+    "D107",     # Missing docstring in __init__
+    "E741",     # Ambiguous variable name
+    "FBT001",   # Boolean types in args
+    "FBT002",   # Boolean types in args
+    "N803",     # Argument name should be lowercase
+    "N806",     # Variable in function should be lowercase
+    "N812",     # Lowercase package imported as non lowercase
+    "PLR2004",  # Magic number
+    "PLR0913",  # Too many arguments
+    "RET504",   # Unecessary assignment before return
+    "S301",     # Pickle loading unsafe
+    "S311",     # random.uniform unsafe
+    "S608",     # SQL injection from f-string 
+    "T201"      # Print statements
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/gsearch/cli/*.py" = ["ANN001"] # Ignore argument types in CLI 
