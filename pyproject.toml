@@ -8,11 +8,26 @@ dependencies = [
     "eotdl>=2026.3.26",
     "lightning>=2.6.1",
     "matplotlib>=3.10.9",
+    "pytest>=9.0.3",
     "rasterio>=1.5.0",
     "tifffile>=2026.5.2",
     "torch>=2.12.0",
     "torchvision>=0.26.0",
+    "typer>=0.25.1",
 ]
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.5.7",
+]
+
+[project.scripts]
+train = "embeddings.train:train_cli"
+predict = "embeddings.predict:predict_cli"
+
+
+[tool.uv]
+package = true
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
@@ -25,10 +40,6 @@ torch = [
 ]
 torchvision = [
   { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-[dependency-groups]
-dev = [
-    "jupyterlab>=4.5.7",
 ]
 
 
