@@ -9,11 +9,11 @@ dependencies = [
     "lightning>=2.6.1",
     "matplotlib>=3.10.9",
     "pytest>=9.0.3",
+    "pyyaml>=6.0.3",
     "rasterio>=1.5.0",
     "tifffile>=2026.5.2",
     "torch>=2.12.0",
     "torchvision>=0.26.0",
-    "typer>=0.25.1",
 ]
 
 [dependency-groups]
@@ -44,7 +44,7 @@ torchvision = [
 
 
 [tool.ruff]
-line-length = 88
+line-length = 100
 exclude = [
     "venv",
     "env",
@@ -67,6 +67,7 @@ ignore = [
     "D100",     # Missing docstring in public module
     "D101",     # Missing docstrings
     "D102",     # Missing docstring in public method
+    "D105",     # Missing docstring in magic method
     "D107",     # Missing docstring in __init__
     "E741",     # Ambiguous variable name
     "FBT001",   # Boolean types in args

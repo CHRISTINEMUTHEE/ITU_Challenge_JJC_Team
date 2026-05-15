@@ -1,0 +1,15 @@
+run_name: "test"
+output_dir: "./runs/"
+model:
+  name: "SimpleConv"
+  params:
+    n_channels: 3
+    n_classes: 16
+    kernel_size: 3
+    padding: "same"
+    padding_mode: "reflect"
+dataset:
+  dir: "./embed2heights/data/train/alphaearth_emb"
+training:
+  batch_size: 16
+  num_epochs: 10
