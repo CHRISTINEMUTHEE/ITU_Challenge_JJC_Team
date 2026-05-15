@@ -16,9 +16,10 @@ embed2heights/
 # IDE
 .vscode/
 
-# Jupyter Notebook
-notebooks/
+# Jupyter Notebooks
+*.ipynb
 .ipynb_checkpoints/
+!data_processing.ipynb
 
 # Training logs
 logs/
