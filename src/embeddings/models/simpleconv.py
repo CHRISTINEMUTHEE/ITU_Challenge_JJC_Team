@@ -5,6 +5,8 @@ import torch
 from torch import nn
 from torch.optim import Optimizer
 
+from embeddings.dataloaders import HEIGHT_NORM_CONSTANT
+
 
 class CNN(nn.Module):
     def __init__(
@@ -70,6 +72,9 @@ class SimpleConv(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         x, y = batch
         y_hat = self.model(x)
@@ -77,7 +82,40 @@ class SimpleConv(L.LightningModule):
         self.log("train_loss", loss)
         return loss
 
+    def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        x, y = batch
+        y_hat = self.model(x)
+        loss = self.loss(y_hat, y)
+        self.log("val_loss", loss)
+
+        # mIoU for building, vegetation, water
+        for i, name in enumerate(["building", "vegetation", "water"]):
+            self.log(f"val_mIoU_{name}", _val_miou(y_hat[:, i], y[:, i]))
+
+        # RMSE for building, vegetation, water (in percentage units)
+        for i, name in enumerate(["building", "vegetation", "water"]):
+            self.log(f"val_mse_{name}", _val_rmse(y_hat[:, i], y[:, i]))
+
+        # RMSE for height (denormalized to meters)
+        y_hat_h = y_hat[:, 3] * HEIGHT_NORM_CONSTANT
+        y_h = y[:, 3] * HEIGHT_NORM_CONSTANT
+        self.log("val_rmse_height", _val_rmse(y_hat_h, y_h))
+
+        return loss
+
     def predict_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         x, _ = batch
         y_hat = self.model(x)
         return y_hat
+
+
+def _val_miou(y_hat: torch.Tensor, y: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+    y_hat_bin = y_hat > threshold
+    y_bin = y > threshold
+    intersection = (y_hat_bin & y_bin).float().sum()
+    union = (y_hat_bin | y_bin).float().sum()
+    return intersection / (union + 1e-8)
+
+
+def _val_rmse(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return ((y_hat - y) ** 2).mean()
