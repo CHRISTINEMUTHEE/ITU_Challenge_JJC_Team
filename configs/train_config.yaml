@@ -9,20 +9,21 @@ trainer:
   logger: 
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "logs"
-      name: "simple_conv_alphaearth"
+      save_dir: logs
+      name: simple_conv_alphaearth
 model:
-  class_path: embeddings.models.SimpleConv
+  class_path: SimpleConv
   init_args:
     n_channels: 64
     n_classes: 4
     kernel_size: 1
-    padding: "same"
-    padding_mode: "reflect"
+    padding: same
+    padding_mode: reflect
 data:
-  class_path: embeddings.dataloaders.PixelEmbeddingDataModule
+  class_path: PixelEmbeddingDataModule
   init_args:
-    data_dir: embed2heights/data/train/alphaearth_emb
-    label_dir: embed2heights/data/train/labels
+    data_dir: embed2heights/processed/train/alphaearth_emb
+    label_dir: embed2heights/processed/train/labels
     batch_size: 64
-    num_workers: 4
+    num_workers: 8
+    patch_size: 256
