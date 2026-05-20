@@ -34,7 +34,7 @@ def _normalize_core_id(filename):
         base = base[:-len("_merged")]   
 
     # 4. Strip trailing year suffixes (e.g., '_2021', '_2023')
-    # base = re.sub(r'_\d{4}$', '', base)
+    base = re.sub(r'_\d{4}$', '', base)
 
     return base
 
@@ -51,10 +51,7 @@ def find_file_pairs(emb_dir, tar_dir):
     label_files = glob.glob(os.path.join(tar_dir, "**", "label_*.tif"), recursive=True)
 
     # 2. Build a fast lookup dictionary for the labels: {normalized_id: full_path}
-    label_map = {}
-    for l_path in label_files:
-        norm_id = _normalize_core_id(l_path)
-        label_map[norm_id] = l_path
+    label_map = {_normalize_core_id(p): p for p in label_files}
 
     # 3. Match embeddings to the lookup dictionary instantly
     for e_path in emb_files:
@@ -64,6 +61,47 @@ def find_file_pairs(emb_dir, tar_dir):
             pairs.append((e_path, label_map[norm_id]))
 
     return pairs
+
+
+def find_file_groups(emb_dirs, tar_dir):
+    """
+    Like find_file_pairs but for multiple embedding dirs.
+    Returns eg [((thor_s2_emb_123_path, thor_s1_emb_123_path, ...), label_123_path), ...]
+    """
+    if isinstance(emb_dirs, (str, os.PathLike)):
+        emb_dirs = [emb_dirs]
+
+    label_files = glob.glob(os.path.join(tar_dir, "**", "label_*.tif"), recursive=True)
+    label_map = {_normalize_core_id(p): p for p in label_files}
+
+    emb_maps = []
+    for d in emb_dirs:
+        files = glob.glob(os.path.join(d, "**", "*.tif"), recursive=True)
+        emb_maps.append({_normalize_core_id(p): p for p in files})
+
+    # -- keep core_ids common across labels and embedding types
+    common = set(label_map)
+    for m in emb_maps:
+        common &= set(m)
+
+    return [
+        (tuple(m[nid] for m in emb_maps), label_map[nid])
+        for nid in sorted(common)
+    ]
+
+
+def _read_emb(emb_entry):
+    """
+    emb_entry: eg (thor_s2_emb_123_path, thor_s1_emb_123_path, ...) or thor_s1_emb_123_path
+    Read one or multiple embedding tifs and *concat* along channel dim.
+    !!Requires same spatial size
+    """
+    paths = list(emb_entry) if isinstance(emb_entry, (list, tuple)) else [emb_entry]
+    arrs = []
+    for p in paths:
+        with rasterio.open(p) as src:
+            arrs.append(src.read().astype(np.float32))
+    return arrs[0] if len(arrs) == 1 else np.concatenate(arrs, axis=0)
 
 # ---------------------------------------------------------
 # DATASET 1: Pixel-Based (Alpha Earth, Tessera)
@@ -79,10 +117,9 @@ class PixelEmbeddingDataset(Dataset):
         return len(self.file_pairs)
 
     def __getitem__(self, idx):
-        emb_path, tar_path = self.file_pairs[idx]
+        emb_entry, tar_path = self.file_pairs[idx]
 
-        with rasterio.open(emb_path) as src:
-            image = src.read().astype(np.float32)
+        image = _read_emb(emb_entry)
         with rasterio.open(tar_path) as src:
             target = src.read().astype(np.float32)
 
@@ -126,10 +163,9 @@ class LatentTokenDataset(Dataset):
         return len(self.file_pairs)
 
     def __getitem__(self, idx):
-        emb_path, tar_path = self.file_pairs[idx]
+        emb_entry, tar_path = self.file_pairs[idx]
 
-        with rasterio.open(emb_path) as src:
-            image = src.read().astype(np.float32)
+        image = _read_emb(emb_entry)
         with rasterio.open(tar_path) as src:
             target = src.read().astype(np.float32)
 

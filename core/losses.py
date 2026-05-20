@@ -192,3 +192,39 @@ class ImprovedCompositeLoss(nn.Module):
 
         # Return tuple matching your training loop signature
         return total_loss, loss_mae, loss_ssim, loss_grad, loss_tversky
+
+
+class SimpleIntegratedLoss(nn.Module):
+    """
+    Expects logits of shape (B, 7, H, W) where:
+        [0:2] = building (bg, fg) logits
+        [2:4] = veg      (bg, fg) logits
+        [4:6] = water    (bg, fg) logits
+        [6]   = height (ignored here)
+    Targets of shape (B, 4, H, W) with continuous coverage in [0, 1] for
+    channels 0..6; they are binarized at `thresh` to form class indices.
+    """
+
+    def __init__(self, thresh=0.1, height_weight=1.0):
+        super().__init__()
+
+        self.thresh = thresh
+        self.height_weight = height_weight
+
+    def forward(self, preds, targets):
+        with torch.cuda.amp.autocast(enabled=False):
+            logits = preds.float()
+            trg_build = (targets[:, 0] > self.thresh).long()
+            trg_veg   = (targets[:, 1] > self.thresh).long()
+            trg_water = (targets[:, 2] > self.thresh).long()
+
+            l_build = F.cross_entropy(
+                logits[:, 0:2], trg_build,
+                weight=torch.tensor((0.3, 0.7), device=preds.device))
+            l_veg   = F.cross_entropy(logits[:, 2:4], trg_veg, weight=torch.tensor((1.0, 1.0), device=preds.device))
+            l_water = F.cross_entropy(logits[:, 4:6], trg_water, weight=torch.tensor((0.3, 0.7), device=preds.device))
+
+            l_height = F.mse_loss(logits[:, 6], targets[:, 3].float())
+
+            total = l_build + l_veg + l_water + self.height_weight * l_height
+        return total, l_build, l_veg, l_water, l_height

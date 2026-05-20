@@ -1,19 +1,21 @@
+import argparse
 import os
 import random
-import argparse
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+from torchmetrics import MeanSquaredError
+from torchmetrics.classification import MulticlassJaccardIndex
 from tqdm.auto import tqdm
 
+from core.dataset import PixelEmbeddingDataset, LatentTokenDataset, find_file_groups, HEIGHT_NORM_CONSTANT
+from core.losses import ImprovedCompositeLoss, SimpleIntegratedLoss
 # --- IMPORT FROM CORE MODULES ---
 from core.model import build_model
-from core.dataset import PixelEmbeddingDataset, LatentTokenDataset, find_file_pairs, HEIGHT_NORM_CONSTANT
-from core.losses import ImprovedCompositeLoss
 
 # --- 1. EXPERIMENT TRACKING ---
 EXPERIMENT_NAME = "terramid_run02/"
@@ -36,12 +38,13 @@ TRAIN_TARGETS_DIR = "../../emb2heights/data/patches_labels_10m/"
 BATCH_SIZE = 32
 PATCH_SIZE = 256
 EPOCHS = 30
-LEARNING_RATE = 2e-4
+LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4  # L2 Regularization
 VAL_SPLIT = 0.2
 LAMBDAS = [1.0, 0.5, 0.5, 2.0]  # [MAE, SSIM, Gradient, Structure/Tversky]
 RANDOM_SEED = 42
 MODEL_TYPE = "auto"  # one of: auto, lightunet, decoder_residual
+LOSS_TYPE = "composite"  # one of: composite, simple_integrated_loss
 
 if torch.cuda.is_available():
     DEVICE = torch.device("cuda")
@@ -81,14 +84,16 @@ def save_experiment_config():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train emb2heights baseline models")
-    parser.add_argument("--model-type", type=str, default=MODEL_TYPE, choices=["auto", "lightunet", "decoder_residual"])
+    parser.add_argument("--model-type", type=str, default=MODEL_TYPE, choices=["auto", "lightunet", "decoder_residual", "linear_decoder"])
     parser.add_argument("--output-dir", type=str, default=BASE_DIR)
-    parser.add_argument("--train-embeddings-dir", type=str, default=TRAIN_EMBEDDINGS_DIR)
+    parser.add_argument("--train-embeddings-dir", type=str, nargs='+', default=[TRAIN_EMBEDDINGS_DIR],
+                        help="One or more embedding directories. If multiple, each sample's embeddings are concatenated along the channel dim.")
     parser.add_argument("--train-targets-dir", type=str, default=TRAIN_TARGETS_DIR)
     parser.add_argument("--experiment-name", type=str, default=EXPERIMENT_NAME)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--patch-size", type=int, default=PATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
+    parser.add_argument("--loss-type", type=str, default="composite", choices=["composite", "simple_integrated_loss"])
     return parser.parse_args()
 
 
@@ -135,10 +140,11 @@ def main():
     global BASE_DIR, EXPERIMENT_NAME, EXP_DIR, VIZ_OUTPUT_DIR
     global BEST_MODEL_PATH, LAST_MODEL_PATH, LOSS_CURVE_PATH, CONFIG_LOG_PATH
     global TRAIN_EMBEDDINGS_DIR, TRAIN_TARGETS_DIR, TEST_TARGETS_DIR
-    global MODEL_TYPE, EPOCHS, BATCH_SIZE, PATCH_SIZE
+    global MODEL_TYPE, EPOCHS, BATCH_SIZE, PATCH_SIZE, LOSS_TYPE
 
     args = parse_args()
     MODEL_TYPE = args.model_type
+    LOSS_TYPE = args.loss_type
     BASE_DIR = args.output_dir
     TRAIN_EMBEDDINGS_DIR = args.train_embeddings_dir
     TRAIN_TARGETS_DIR = args.train_targets_dir
@@ -157,29 +163,33 @@ def main():
     save_experiment_config()
 
     print("--- 1. Data Setup ---")
-    all_train_pairs = find_file_pairs(TRAIN_EMBEDDINGS_DIR, TRAIN_TARGETS_DIR)
+    all_train_pairs = find_file_groups(TRAIN_EMBEDDINGS_DIR, TRAIN_TARGETS_DIR)
     if len(all_train_pairs) == 0:
         raise ValueError(
             "No training (embedding, label) pairs found. "
-            f"train_embeddings_dir='{TRAIN_EMBEDDINGS_DIR}', "
+            f"train_embeddings_dir={TRAIN_EMBEDDINGS_DIR}, "
             f"train_targets_dir='{TRAIN_TARGETS_DIR}'. "
             "Check filename conventions and directory paths."
         )
+    print(f"   Matched {len(all_train_pairs)} samples across {len(TRAIN_EMBEDDINGS_DIR)} embedding dir(s).")
     train_pairs, val_pairs = train_test_split(
         all_train_pairs, test_size=VAL_SPLIT, random_state=RANDOM_SEED
     )
 
-        # In train.py:
-    if MODEL_TYPE == "lightunet":
+    # FOR NOW: Auto-route dataset based on embedding spatial size: 256x256 -> pixel, else token (16x16).
+    import rasterio as _rio
+    with _rio.open(train_pairs[0][0][0]) as _src:
+        _emb_h = _src.height
+    if _emb_h == PATCH_SIZE:
         train_ds = PixelEmbeddingDataset(train_pairs, patch_size=PATCH_SIZE, is_train=True)
         val_ds = PixelEmbeddingDataset(val_pairs, patch_size=PATCH_SIZE, is_train=False)
     else:
-        # For the decoders (TerraMind/Thor)
         train_ds = LatentTokenDataset(train_pairs, patch_size=PATCH_SIZE, scale_factor=16, is_train=True)
         val_ds = LatentTokenDataset(val_pairs, patch_size=PATCH_SIZE, scale_factor=16, is_train=False)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
+    pin_kwargs = {"pin_memory": True, "pin_memory_device": "cuda"} if DEVICE.type == "cuda" else {"pin_memory": False}
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=6, persistent_workers=True, prefetch_factor=6, **pin_kwargs)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, persistent_workers=True, prefetch_factor=2, **pin_kwargs)
 
     sample_img, _ = train_ds[0]
     n_channels, n_classes = sample_img.shape[0], 4
@@ -193,8 +203,11 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     # NEW: Aggressive Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
-    criterion = ImprovedCompositeLoss(lambdas=LAMBDAS).to(DEVICE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    if LOSS_TYPE == "simple_integrated_loss":
+        criterion = SimpleIntegratedLoss().to(DEVICE)
+    else:
+        criterion = ImprovedCompositeLoss(lambdas=LAMBDAS).to(DEVICE)
 
     print(f"Starting training on {DEVICE}...")
 
@@ -209,17 +222,20 @@ def main():
 
         train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS} [train]", leave=False)
         for imgs, targets in train_pbar:
-            imgs, targets = imgs.to(DEVICE), targets.to(DEVICE)
+            imgs, targets = imgs.to(DEVICE, non_blocking=True), targets.to(DEVICE, non_blocking=True)
             optimizer.zero_grad()
-            outputs = model(imgs)
 
-            loss, _, _, _, _ = criterion(outputs, targets)
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):
+                outputs = model(imgs)
+                loss = criterion(outputs, targets)[0]
+
             loss.backward()
+            optimizer.step()
 
             # NEW: Gradient Clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-            optimizer.step()
+
             running_loss += loss.item() * imgs.size(0)
             train_samples_seen += imgs.size(0)
             train_avg = running_loss / max(1, train_samples_seen)
@@ -231,26 +247,49 @@ def main():
         # --- VALIDATION LOOP ---
         model.eval()
         val_running_loss = 0.0
-        val_components = torch.zeros(4).to(DEVICE)
+        val_components = None  # lazily sized to match the loss's component count
         val_samples_seen = 0
+
+        building_miou = MulticlassJaccardIndex(num_classes=2, average='none').to(DEVICE)
+        veg_miou = MulticlassJaccardIndex(num_classes=2, average='none').to(DEVICE)
+        water_miou = MulticlassJaccardIndex(num_classes=2, average='none').to(DEVICE)
+        height_rmse = MeanSquaredError(squared=False).to(DEVICE)
+        height_idx = 6 if LOSS_TYPE == "simple_integrated_loss" else 3
 
         with torch.no_grad():
             val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{EPOCHS} [val]", leave=False)
             for imgs, targets in val_pbar:
-                imgs, targets = imgs.to(DEVICE), targets.to(DEVICE)
+                imgs, targets = imgs.to(DEVICE, non_blocking=True), targets.to(DEVICE, non_blocking=True)
                 outputs = model(imgs)
+                out = criterion(outputs, targets)
+                loss = out[0]
+                comps = torch.stack([c.detach() for c in out[1:]])
 
-                loss, l_mae, l_ssim, l_grad, l_tversky = criterion(outputs, targets)
                 val_running_loss += loss.item() * imgs.size(0)
 
                 bs = imgs.size(0)
-                val_components[0] += l_mae * bs
-                val_components[1] += l_ssim * bs
-                val_components[2] += l_grad * bs
-                val_components[3] += l_tversky * bs
+                if val_components is None:
+                    val_components = torch.zeros_like(comps)
+                val_components += comps * bs
                 val_samples_seen += bs
                 val_avg_live = val_running_loss / max(1, val_samples_seen)
                 val_pbar.set_postfix(avg=f"{val_avg_live:.4f}")
+
+                building_miou.update(
+                    outputs[:, 0:2].argmax(dim=1).reshape(-1),
+                    (targets[:, 0] > 0.1).long().reshape(-1))
+                veg_miou.update(
+                    outputs[:, 2:4].argmax(dim=1).reshape(-1),
+                    (targets[:, 1] > 0.1).long().reshape(-1))
+                water_miou.update(
+                    outputs[:, 4:6].argmax(dim=1).reshape(-1),
+                    (targets[:, 2] > 0.1).long().reshape(-1))
+
+                # RMSE in physical meters (un-normalize by HEIGHT_NORM_CONSTANT).
+                height_rmse.update(
+                    outputs[:, height_idx] * HEIGHT_NORM_CONSTANT,
+                    targets[:, 3] * HEIGHT_NORM_CONSTANT,
+                )
 
         epoch_val_loss = val_running_loss / len(val_ds)
         epoch_comp = val_components / len(val_ds)
@@ -263,9 +302,24 @@ def main():
             torch.save(model.state_dict(), BEST_MODEL_PATH)
             print(f"   >> Model Saved! (New Best Val Loss: {best_val_loss:.4f})")
 
-        print(f"Epoch {epoch + 1}/{EPOCHS} | Train: {epoch_loss:.4f} | Val: {epoch_val_loss:.4f}")
+        b_bg, b_fg = building_miou.compute().tolist()
+        v_bg, v_fg = veg_miou.compute().tolist()
+        w_bg, w_fg = water_miou.compute().tolist()
+        h_rmse = height_rmse.compute().item()
+
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch + 1}/{EPOCHS} | LR: {current_lr:.2e} | Train: {epoch_loss:.4f} | Val: {epoch_val_loss:.4f}")
         print(
-            f"   >> Val Breakdown: MAE:{epoch_comp[0]:.3f} | SSIM:{epoch_comp[1]:.3f} | Grad:{epoch_comp[2]:.3f} | Tversky:{epoch_comp[3]:.3f}")
+            f"   >> IoU bg/fg: build {b_bg:.3f}/{b_fg:.3f} | veg {v_bg:.3f}/{v_fg:.3f} | water {w_bg:.3f}/{w_fg:.3f} | height RMSE: {h_rmse:.3f}m"
+        )
+        if LOSS_TYPE == "simple_integrated_loss":
+            print(
+                f"   >> CE build:{epoch_comp[0]:.3f} | veg:{epoch_comp[1]:.3f} | water:{epoch_comp[2]:.3f} | MSE height:{epoch_comp[3]:.3f}"
+            )
+        else:
+            print(
+                f"   >> MAE:{epoch_comp[0]:.3f} | SSIM:{epoch_comp[1]:.3f} | Grad:{epoch_comp[2]:.3f} | Tversky:{epoch_comp[3]:.3f}"
+            )
 
     print("--- 3. Saving & Visualizing ---")
     torch.save(model.state_dict(), LAST_MODEL_PATH)
