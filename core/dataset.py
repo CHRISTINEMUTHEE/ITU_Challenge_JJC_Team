@@ -34,7 +34,7 @@ def _normalize_core_id(filename):
         base = base[:-len("_merged")]   
 
     # 4. Strip trailing year suffixes (e.g., '_2021', '_2023')
-    # base = re.sub(r'_\d{4}$', '', base)
+    base = re.sub(r'_\d{4}$', '', base)
 
     return base
 
