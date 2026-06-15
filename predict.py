@@ -6,8 +6,8 @@ from tqdm.auto import tqdm
 
 # --- IMPORT FROM CORE MODULES ---
 from core.model import build_model
-from core.dataset import PixelEmbeddingDataset, LatentTokenDataset, find_file_pairs, _normalize_core_id, \
-    HEIGHT_NORM_CONSTANT
+from core.dataset import PixelEmbeddingDataset, LatentTokenDataset, find_file_pairs, find_embedding_files, \
+    _normalize_core_id, HEIGHT_NORM_CONSTANT
 
 # --- DEFAULTS ---
 EXPERIMENT_NAME = "terramind_decoder_run01"
@@ -40,8 +40,10 @@ def parse_args():
                         help="Path to the .pth checkpoint. Defaults to <base-dir>/<experiment-name>/model_best.pth.")
     parser.add_argument("--test-embeddings-dir", type=str, required=True,
                         help="Directory containing embedding .tif files.")
-    parser.add_argument("--test-targets-dir", type=str, required=True,
-                        help="Directory containing label .tif files (used only for file pairing).")
+    parser.add_argument("--test-targets-dir", type=str, default=None,
+                        help="Optional directory of label .tif files. Inference does NOT need labels; "
+                             "leave this unset for the held-out test set. If provided, only embeddings "
+                             "with a matching label are processed.")
     parser.add_argument("--predictions-dir", type=str, default=None,
                         help="Output directory for .npy predictions. Defaults to <base-dir>/<experiment-name>/predictions.")
     parser.add_argument("--patch-size", type=int, default=PATCH_SIZE)
@@ -59,11 +61,22 @@ def main():
 
     os.makedirs(predictions_dir, exist_ok=True)
 
-    # --- Load data pairs ---
-    print(f"Loading file pairs from embeddings: {args.test_embeddings_dir}")
-    pairs = find_file_pairs(args.test_embeddings_dir, args.test_targets_dir)
-    if not pairs:
-        raise RuntimeError("No matching file pairs found. Check --test-embeddings-dir and --test-targets-dir.")
+    # --- Load embeddings to predict on ---
+    if args.test_targets_dir:
+        print(f"Pairing embeddings with labels in: {args.test_targets_dir}")
+        pairs = find_file_pairs(args.test_embeddings_dir, args.test_targets_dir)
+        if not pairs:
+            raise RuntimeError(
+                "No matching file pairs found. The test set has no labels, so leave "
+                "--test-targets-dir unset to run inference on all embeddings."
+            )
+    else:
+        print(f"Loading embeddings (label-free inference): {args.test_embeddings_dir}")
+        pairs = find_embedding_files(args.test_embeddings_dir)
+        if not pairs:
+            raise RuntimeError(
+                f"No .tif embeddings found in --test-embeddings-dir: {args.test_embeddings_dir}"
+            )
     if args.max_samples > 0:
         pairs = pairs[:args.max_samples]
 

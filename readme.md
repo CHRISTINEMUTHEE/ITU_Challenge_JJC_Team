@@ -107,13 +107,16 @@ Outputs are written to `./runs/<experiment_name>/`: hyperparameter log, `model_b
 
 Load a trained checkpoint and save predictions as `.npy` files (shape `[4, H, W]`, channels: building %, vegetation %, water %, height in meters).
 
+Inference does **not** require labels. The held-out test set has no labels, so just point `--test-embeddings-dir` at the embeddings and leave `--test-targets-dir` unset:
+
 ```bash
 python predict.py \
     --experiment-name my_run \
     --model-type decoder_residual \
-    --test-embeddings-dir /path/to/test/embeddings \
-    --test-targets-dir /path/to/test/labels
+    --test-embeddings-dir /path/to/test/embeddings
 ```
+
+`--model-type` must match what you trained with (e.g. `lightunet` for Tessera/AlphaEarth pixel embeddings, `decoder_residual` for latent-token embeddings). Only pass `--test-targets-dir` if you have matching labels and want to restrict inference to paired tiles.
 
 **Arguments**
 
@@ -124,12 +127,12 @@ python predict.py \
 | `--model-type` | `decoder_residual` | Architecture (must match training) |
 | `--model-path` | `<base-dir>/<experiment-name>/model_best.pth` | Path to `.pth` checkpoint |
 | `--test-embeddings-dir` | required | Directory with embedding `.tif` files |
-| `--test-targets-dir` | required | Directory with label `.tif` files (used only for file pairing) |
+| `--test-targets-dir` | `None` (optional) | Directory with label `.tif` files. Not needed for inference; if set, only embeddings with a matching label are processed |
 | `--predictions-dir` | `<base-dir>/<experiment-name>/predictions` | Output directory for `.npy` files |
 | `--patch-size` | `256` | Spatial crop size |
 | `--max-samples` | `0` (all) | Limit inference to N samples |
 
-Each output file is named `pred_<core_id>.npy` and contains a `float32` array of shape `[4, H, W]`:
+Each output file is named `<core_id>.npy` and contains a `float32` array of shape `[4, H, W]`:
 - Channel 0: Building coverage (0–1)
 - Channel 1: Vegetation coverage (0–1)
 - Channel 2: Water coverage (0–1)
