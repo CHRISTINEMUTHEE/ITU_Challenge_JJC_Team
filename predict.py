@@ -6,12 +6,12 @@ from tqdm.auto import tqdm
 
 # --- IMPORT FROM CORE MODULES ---
 from core.model import build_model
-from core.dataset import PixelEmbeddingDataset, LatentTokenDataset, find_file_pairs, find_embedding_files, \
-    _normalize_core_id, HEIGHT_NORM_CONSTANT
+from core.dataset import PixelEmbeddingDataset, PixelFusionDataset, LatentTokenDataset, find_file_pairs, \
+    find_embedding_files, find_pixel_fusion_files, _normalize_core_id, HEIGHT_NORM_CONSTANT
 
 # --- DEFAULTS ---
 EXPERIMENT_NAME = "terramind_decoder_run01"
-BASE_DIR = "./runs"
+BASE_DIR = "./baselines"
 TEST_EMBEDDINGS_DIR = ""
 TEST_TARGETS_DIR = ""
 MODEL_TYPE = "decoder_residual"
@@ -38,12 +38,18 @@ def parse_args():
                         help="Model architecture used during training.")
     parser.add_argument("--model-path", type=str, default=None,
                         help="Path to the .pth checkpoint. Defaults to <base-dir>/<experiment-name>/model_best.pth.")
-    parser.add_argument("--test-embeddings-dir", type=str, required=True,
-                        help="Directory containing embedding .tif files.")
+    parser.add_argument("--test-embeddings-dir", type=str, default=None,
+                        help="Directory containing single-source embedding .tif files. "
+                             "Use this OR (--test-alpha-dir and --test-tessera-dir) for fusion models.")
+    parser.add_argument("--test-alpha-dir", type=str, default=None,
+                        help="AlphaEarth test embeddings dir. Provide together with --test-tessera-dir "
+                             "to reproduce the fused (alpha+tessera) input used in fusion training.")
+    parser.add_argument("--test-tessera-dir", type=str, default=None,
+                        help="Tessera test embeddings dir. Provide together with --test-alpha-dir for fusion.")
     parser.add_argument("--test-targets-dir", type=str, default=None,
                         help="Optional directory of label .tif files. Inference does NOT need labels; "
                              "leave this unset for the held-out test set. If provided, only embeddings "
-                             "with a matching label are processed.")
+                             "with a matching label are processed. (Single-source mode only.)")
     parser.add_argument("--predictions-dir", type=str, default=None,
                         help="Output directory for .npy predictions. Defaults to <base-dir>/<experiment-name>/predictions.")
     parser.add_argument("--patch-size", type=int, default=PATCH_SIZE)
@@ -56,13 +62,26 @@ def main():
     args = parse_args()
 
     exp_dir = os.path.join(args.base_dir, args.experiment_name)
-    model_path = args.model_path or os.path.join(exp_dir, "model_best.pth")
+    # Best model can either be model_best.pth or best_model_e1.pth or last_model.pth
+    # model_path = os.path.join(exp_dir, "best_model_e1.pth")
+    model_path = args.model_path or os.path.join(exp_dir, "model_best_e1.pth")
     predictions_dir = args.predictions_dir or os.path.join(exp_dir, "predictions")
 
     os.makedirs(predictions_dir, exist_ok=True)
 
+    fusion_mode = bool(args.test_alpha_dir and args.test_tessera_dir)
+
     # --- Load embeddings to predict on ---
-    if args.test_targets_dir:
+    if fusion_mode:
+        # Reproduce the alpha+tessera fused input the model was trained on.
+        print(f"Fusion inference (alpha + tessera):\n  alpha:   {args.test_alpha_dir}\n  tessera: {args.test_tessera_dir}")
+        pairs = find_pixel_fusion_files(args.test_alpha_dir, args.test_tessera_dir)
+        if not pairs:
+            raise RuntimeError(
+                "No matching alpha/tessera pairs found. Check --test-alpha-dir and --test-tessera-dir "
+                "(filenames must share a core id, e.g. emb_3001_BE_2023_quantized <-> 3001_BE_2023_merged)."
+            )
+    elif args.test_embeddings_dir and args.test_targets_dir:
         print(f"Pairing embeddings with labels in: {args.test_targets_dir}")
         pairs = find_file_pairs(args.test_embeddings_dir, args.test_targets_dir)
         if not pairs:
@@ -70,18 +89,25 @@ def main():
                 "No matching file pairs found. The test set has no labels, so leave "
                 "--test-targets-dir unset to run inference on all embeddings."
             )
-    else:
+    elif args.test_embeddings_dir:
         print(f"Loading embeddings (label-free inference): {args.test_embeddings_dir}")
         pairs = find_embedding_files(args.test_embeddings_dir)
         if not pairs:
             raise RuntimeError(
                 f"No .tif embeddings found in --test-embeddings-dir: {args.test_embeddings_dir}"
             )
+    else:
+        raise RuntimeError(
+            "Provide either --test-embeddings-dir (single source) or both "
+            "--test-alpha-dir and --test-tessera-dir (fusion)."
+        )
     if args.max_samples > 0:
         pairs = pairs[:args.max_samples]
 
     is_lightunet = args.model_type.lower() == "lightunet"
-    if is_lightunet:
+    if fusion_mode:
+        test_ds = PixelFusionDataset(pairs, patch_size=args.patch_size, is_train=False)
+    elif is_lightunet:
         test_ds = PixelEmbeddingDataset(pairs, patch_size=args.patch_size, is_train=False)
     else:
         test_ds = LatentTokenDataset(pairs, patch_size=args.patch_size, scale_factor=16, is_train=False)
@@ -107,8 +133,12 @@ def main():
             # Denormalize height channel: model output [0,1] -> physical meters
             pred_np[3] = pred_np[3] * HEIGHT_NORM_CONSTANT
 
-            emb_path, _ = test_ds.file_pairs[i]
-            core_id = _normalize_core_id(emb_path)
+            if fusion_mode:
+                # triplet = (alpha_path, tessera_path, None); use tessera id for naming
+                src_path = test_ds.file_triplets[i][1]
+            else:
+                src_path = test_ds.file_pairs[i][0]
+            core_id = _normalize_core_id(src_path, keep_year=True)
 
             save_path = os.path.join(predictions_dir, f"{core_id}.npy")
             np.save(save_path, pred_np)

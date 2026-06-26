@@ -115,7 +115,7 @@ python predict.py \
     --model-type decoder_residual \
     --test-embeddings-dir /path/to/test/embeddings
 ```
-
+##### Hint!!
 `--model-type` must match what you trained with (e.g. `lightunet` for Tessera/AlphaEarth pixel embeddings, `decoder_residual` for latent-token embeddings). Only pass `--test-targets-dir` if you have matching labels and want to restrict inference to paired tiles.
 
 **Arguments**

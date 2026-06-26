@@ -8,10 +8,16 @@ from torch.utils.data import Dataset
 
 HEIGHT_NORM_CONSTANT = 30.0
 
-def _normalize_core_id(filename):
+def _normalize_core_id(filename, keep_year=False):
     """
-    Extracts the pure core ID by stripping all known prefixes,
-    embedding suffixes, and year suffixes.
+    Extracts the pure core ID by stripping all known prefixes and embedding
+    suffixes.
+
+    The year suffix (e.g. '_2023') is stripped by default so that embeddings
+    (named without a year, e.g. 'tessera_emb_0000_BE') can be paired with labels
+    (named with a year, e.g. 'label_0000_BE_2023'). For SUBMISSION filenames the
+    challenge expects the year to be kept (e.g. '3001_BE_2023'); pass
+    keep_year=True in that case.
     """
     base = os.path.splitext(os.path.basename(filename))[0]
 
@@ -19,8 +25,8 @@ def _normalize_core_id(filename):
     if base.startswith("label_"):
         base = base[len("label_"):]
 
-    # 2. Strip embedding prefixes
-    for prefix in ("gee_emb_","tessera_emb_", "s2_", "s1_"):
+    # 2. Strip embedding prefixes (longest/most-specific first)
+    for prefix in ("gee_emb_", "tessera_emb_", "s2_", "s1_", "emb_"):
         if base.startswith(prefix):
             base = base[len(prefix):]
             break
@@ -31,10 +37,13 @@ def _normalize_core_id(filename):
     if base.endswith("_embeddings"):
         base = base[:-len("_embeddings")]
     if base.endswith("_merged"):
-        base = base[:-len("_merged")]   
+        base = base[:-len("_merged")]
+    if base.endswith("_quantized"):
+        base = base[:-len("_quantized")]
 
-    # 4. Strip trailing year suffixes (e.g., '_2021', '_2023')
-    base = re.sub(r'_\d{4}$', '', base)
+    # 4. Strip trailing year suffixes (e.g., '_2021', '_2023') unless requested.
+    if not keep_year:
+        base = re.sub(r'_\d{4}$', '', base)
 
     return base
 
@@ -94,6 +103,26 @@ def find_pixel_fusion_pairs(alpha_dir, tessera_dir, label_dir):
             )
 
     return pairs
+
+
+def find_pixel_fusion_files(alpha_dir, tessera_dir):
+    """
+    Label-free alpha+tessera pairing for inference on the held-out test set.
+    Returns triplets (alpha_path, tessera_path, None) so PixelFusionDataset can
+    build the same fused input used in training without requiring labels.
+    """
+    alpha_files = glob.glob(os.path.join(alpha_dir, "**", "*.tif"), recursive=True)
+    tessera_files = glob.glob(os.path.join(tessera_dir, "**", "*.tif"), recursive=True)
+
+    tessera_map = {_normalize_core_id(p): p for p in tessera_files}
+
+    triplets = []
+    for alpha_path in sorted(alpha_files):
+        norm_id = _normalize_core_id(alpha_path)
+        if norm_id in tessera_map:
+            triplets.append((alpha_path, tessera_map[norm_id], None))
+
+    return triplets
 
 # ---------------------------------------------------------
 # DATASET 1: Pixel-Based (Alpha Earth, Tessera)
